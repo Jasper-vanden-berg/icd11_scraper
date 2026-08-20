@@ -1,0 +1,83 @@
+scraper:
+  api_settings:
+    entity_url: "https://id.who.int/icd/entity/"
+    token_endpoint: "https://icdaccessmanagement.who.int/connect/token"
+    client_id: "40cb6baa-6644-49fd-9497-de3651964921_c3c4b06d-9ec4-492c-ac6f-9c94c2ae0329"
+    client_secret: "zj5f4S0Q357RB5DYdHJiWOWUtIAn5shKcRAYSyX2Ngw="
+    scope: "icdapi_access"
+    grant_type: "client_credentials"
+  scrape_settings:
+      main_ancestor_id : "455013390"
+      #main_ancestor_id: "2088244412"
+      #main_ancestor_child_type: "entity"
+      urls: ["https://id.who.int/icd/release/11/version/mms/","https://id.who.int/icd/entity/"]
+      out_dir: "data/version"
+  icd:
+    base_codes:
+      symptoms:
+        id: "1843895818"
+        description: "Symptoms, signs or clinical findings, not elsewhere classified"
+
+      injuries_and_poisoning:
+        id: "435227771"
+        description: "Injury, poisoning or certain other consequences of external causes"
+
+      external_causes_of_morbidity:
+        id: "850137482"
+        description: "External causes of morbidity and mortality"
+
+      health_status_factors:
+        id: "1249056269"
+        description: "Factors influencing health status or contact with health services"
+      
+      special_purpose_codes:
+        id: "1596590595"
+        description: "Special purpose codes"
+
+      supplementary_codes_for_traditional_medicine:
+        id: "718687701"
+        description: "Supplementary codes for traditional medicine"
+
+      supplementary_codes_for_functioning_assessment:
+        id: "231358748"
+        description: "Supplementary codes for functioning assessment"
+
+      extension_codes:
+        id: "979408586"
+        description: "Post-coordination extensions"
+
+    extension_mappings:
+      clinical_severity:
+        start_values: ["1726150948","681697550"]
+        end_value: "1726150948"
+      clinical_staging:
+        start_values: ["1387195885","930431064","1301318821","785802584","379428326","1263546640","2122233748","591767327"]
+        end_value: "1301318821"
+      course:
+        start_values: ["2082570273"]
+        end_value: "2082570273"
+      onset:
+        start_values: ["361933667"]
+        end_value: "361933667"
+      persistency:
+        start_values: ["69890123"]
+        end_value: "69890123"
+      time_in_life:
+        start_values: ["639052684"]
+        end_value: "639052684"
+      infectious_agent:
+        start_values: ["437215757"]
+        end_value: "437215757"
+      nutritional_status:
+        start_values: ["1451583031"]
+        end_value: "1451583031"
+
+database:
+  postgres:
+    host: "localhost"
+    port: 5432
+    dbname: "felixDB"
+    user: "jasper_vd_berg"
+    password: "Climpaloon@nin121"
+
+  mode: rebuild 

@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import logging
+from logging import config
 import sys
 import time
 from collections import defaultdict
@@ -34,9 +35,6 @@ logging.basicConfig(
 )
 
 
-# ---------------------------------------------------------------------------
-# State
-# ---------------------------------------------------------------------------
 
 class ScraperState:
     def __init__(self):
@@ -50,9 +48,8 @@ class ScraperState:
 class ProgressLogger:
     """
     Tracks scrape progress using a monotonic clock.
-
-    time.monotonic() is appropriate here because it measures elapsed time
-    independently of changes to the system wall clock.
+    Progress based logging is hard to time in async scripts.
+    This code uses a monotonic clock to log progress at regular intervals, regardless of how long each scrape takes.
     """
 
     def __init__(self, interval_seconds=LOG_INTERVAL_SECONDS):
@@ -76,9 +73,9 @@ class ProgressLogger:
 
 def url_splitter(url_list):
     """
-    Extract node IDs from ICD URLs.
-
-    Supports both MMS and entity URLs.
+    This function takes a list of URLs and extracts the node IDs from them.
+    It supports both MMS and entity URLs, and handles the edge case where the node ID is just the URL without an extension.
+    This only happens when we try to look up the parent of the root note, which is a special case in the ICD-11 API.
     """
     if not url_list:
         return []
@@ -109,7 +106,8 @@ def url_splitter(url_list):
 
 
 def to_bool(value):
-    """Convert ICD pseudo-booleans to Python booleans."""
+    """Convert ICD pseudo-booleans to Python booleans.
+    We lose some specificity here, but gain a lot of simplicity."""
     if value is None:
         return None
 
@@ -140,8 +138,10 @@ def to_bool(value):
 def merge_from_parent(parent, child):
     """
     Recursively merge parent attributes into child attributes.
+    This is done to ensure that child nodes inherit attributes from their parent nodes.
+    If a parent diagnosis A manifests in diagnosis B, we can assume the children of A do so as well.
 
-    Child values take precedence.
+    For the code, child values take precedence if they conflict with parent values.
     Lists are merged while preserving order and removing duplicates.
     """
     parent = parent or {}
@@ -172,7 +172,12 @@ def merge_from_parent(parent, child):
 # ---------------------------------------------------------------------------
 
 def retrieve_children(data):
-    """Retrieve official and index-term children."""
+    """Retrieve official and index-term children.
+    This code retrieves both the official children (data.get("child"))
+    and the unofficial "below shorline children" (data.get("indexTerm").get("foundationReference")) from the ICD-11 API data.
+    
+    We also ensure that the returned list of children is unique and preserves the order of appearance in the API data.
+    """
     main_children = url_splitter(
         data.get("child") or []
     )
@@ -193,6 +198,13 @@ def retrieve_children(data):
 def retrieve_relationships(data, node_id, children):
     """
     Retrieve attributes and diagnosis-to-diagnosis relationships.
+    
+    This code retrieves the postcoordination scale from the ICD-11 API data.
+    The data is then split into attributes and relationships based on the axisName.
+    Where an attribute is a relationship between a diagnosis and a non-diagnosis (e.g., a symptom, severity etc.)
+    and a relationship is a relationship between two diagnoses (e.g., hasManifestation, hasCausingCondition, associatedWith).
+    
+    The ICD has some cyclical relationships (diagnosis A causes diagnosis A), these are filtered.
     """
     relationship_keys = {
         "hasManifestation",
@@ -226,7 +238,9 @@ def retrieve_relationships(data, node_id, children):
 
 
 def process_entity(data):
-    """Process entity API data."""
+    """Process entity API data.
+    The synonyms table is only available in the entity API, so we process it here."""
+    
     children = retrieve_children(data)
     
     synonyms = []
@@ -251,7 +265,8 @@ def process_mms(data, node_id):
 # ---------------------------------------------------------------------------
 
 async def fetch_json(session, url, headers, semaphore):
-    """Fetch JSON from an API endpoint."""
+    """Fetch JSON from an API endpoint.
+    This code runs asynchronously and uses a semaphore to limit the number of concurrent requests."""
     async with semaphore:
         try:
             async with session.get(url,headers=headers) as response:
@@ -274,6 +289,10 @@ async def fetch_json(session, url, headers, semaphore):
 async def process_urls(session,urls,headers,node_id,semaphore):
     """
     Fetch and combine entity and MMS data for a node.
+    Most api calls contain both an entity and an MMS endpoint.
+    Where as shore line leaves (unofficial children), only contain an entity endpoint.
+    
+    All data is retrieved, merged where appropriate, and returned as a single dictionary.
     """
     entity_url = urls[1] + node_id
     mms_url = urls[0] + node_id
@@ -328,7 +347,14 @@ async def process_urls(session,urls,headers,node_id,semaphore):
 
 async def scrape_tree(session,urls,headers,node_id,state,base_codes,semaphore,
     seen,lock,progress_logger,parent_id=None,diag_type="diagnosis"):
-    """Recursively scrape the ICD tree."""
+    """Recursively scrape the ICD tree.
+    This code recursively scrapes the ICD tree, starting from a given node ID.
+    It fetches data for the node, processes it, and then recursively scrapes its children
+    It also splits data into different tables based on the type of data (diagnosis, attributes, relationships, synonyms).
+    
+    The code works asynchronously, using a semaphore to limit the number of concurrent requests,
+    and a lock to ensure thread safety when updating shared state.
+    """
     
     #Get the diagnosis type (diagnosise, symptoms, medication, extension etc.)
     diag_type = base_codes.get(node_id, diag_type)
@@ -399,7 +425,10 @@ async def scrape_tree(session,urls,headers,node_id,state,base_codes,semaphore,
 
 
 def export_to_tsv(data, output_dir, file_name):
-    """Export scraper data to TSV."""
+    """Export scraper data to TSV.
+    This code exports the scraped data to a TSV file, with different formats for different types of data.
+    It supports diagnosis, hierarchy, synonyms, attributes, and relationships data.
+    The output directory is created if it does not exist."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -434,41 +463,44 @@ def export_to_tsv(data, output_dir, file_name):
 
 
 async def async_main():
+    #Read the configuration file
     config_path = PROJECT_ROOT / "config" / "config.yml"
     with config_path.open("r") as file:
         config = yaml.safe_load(file)
 
+    #Get the setting groups
     api_settings = config["scraper"]["api_settings"]
-
+    scrape_settings = config["scraper"]["scrape_settings"]
+    icd_settings = config["scraper"]["icd"]
+    
+    #Get the latest ICD-11 version
     token = get_token(api_settings)
     icd_version = get_latest_release(api_settings,token)
-
     logging.info("Latest ICD-11 version: %s", icd_version)
-
-    # Replace this with the actual version stored in your DB.
-    db_version = ""
-
+    
+    #Compare it to the latest version in the data folder, if the same, skip scraping
+    out_dir = PROJECT_ROOT / scrape_settings["out_dir"].replace("version", icd_version)
+    data_dir = Path(out_dir).parent
+    db_version =max((p for p in data_dir.glob("????-??") if p.is_dir()), key=lambda p: p.name).name
     if db_version == icd_version:
         logging.info("ICD-11 version is up to date: %s. ""No update needed.",db_version,)
         return
-
     logging.info("ICD-11 version changed from %s to %s. ""Updating database...",db_version,icd_version,)
 
-    icd_settings = config["scraper"]["icd"]
-    scrape_settings = config["scraper"]["scrape_settings"]
-
+    #Prep the scraping parameters
     urls = [url.replace("version", icd_version) for url in scrape_settings["urls"]]
-
     main_ancestor_id = (scrape_settings["main_ancestor_id"])
     base_codes = {value["id"]: key for key, value in icd_settings["base_codes"].items()}
 
+    #Prep the async scraping state and concurrency controls
     state = ScraperState()
     semaphore = asyncio.Semaphore(REQUEST_CONCURRENCY)
     lock = asyncio.Lock()
     seen = set()
+    
+    #Prep the progress logger and HTTP session
     progress_logger = ProgressLogger(interval_seconds=LOG_INTERVAL_SECONDS)
     timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
-
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
@@ -476,6 +508,7 @@ async def async_main():
         "API-Version": "v2",
     }
 
+    #Run the async scraping process
     async with aiohttp.ClientSession(timeout=timeout) as session:
 
         await scrape_tree(
@@ -491,8 +524,8 @@ async def async_main():
             progress_logger=progress_logger,
         )
 
-    out_dir = scrape_settings["out_dir"].replace("version",icd_version)
-    output_path = PROJECT_ROOT / out_dir / "raw"
+    #Once completed, export the scraped data to TSV files
+    output_path = out_dir / "raw"
 
     export_to_tsv(state.diagnosis_table,output_path,"diagnosis")
     export_to_tsv(state.diagnosis_attributes_table,output_path,"attributes")

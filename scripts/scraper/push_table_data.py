@@ -15,11 +15,17 @@ from scripts.utils.utils import get_latest_release, get_token
 
 
 def load_config(config_path):
+    """
+    Simple load config function
+    """
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
 
 
 def get_connection(db_config):
+    """
+    Simply connection function, we use psycopg2
+    """
     return psycopg2.connect(
         host=db_config["host"],
         port=db_config["port"],
@@ -30,6 +36,9 @@ def get_connection(db_config):
 
 
 def run_sql_file(conn, path: Path):
+    """
+    simple query runner function
+    """
     with open(path, "r") as f:
         sql_query = f.read()
 
@@ -40,8 +49,11 @@ def run_sql_file(conn, path: Path):
 
 
 def load_schemas(conn, schema_root: Path):
-    #Here we initiate the tables.
-    #Tables who's incremental ID we need for other tables are prioritized.
+    """
+    This function loads the sql schemas
+    The main tables need to be initialized first, since other tables rely on them.
+    If the tables dont exist in the DB, they will be created
+    """
     priority = [
         schema_root / "attributes/attributes.sql",
         schema_root / "diagnosis/diagnosis.sql",
@@ -60,6 +72,9 @@ def load_schemas(conn, schema_root: Path):
 
 
 def load_tsv(path: Path):
+    """
+    Simple load tsv function
+    """
     if not path.exists():
         logging.warning("Missing file: %s", path)
         return None
@@ -68,6 +83,10 @@ def load_tsv(path: Path):
 
 
 def build_mapping(conn, table, key_col):
+    """
+    This function builds a mapping between the icd codes, and the ids generated in the database.
+    This ensures we can use the internal DB ids to link tables, not the ICD_11 codes.
+    """
     with conn.cursor() as cur:
         cur.execute(f"""
             SELECT {key_col}, id
@@ -85,7 +104,16 @@ def sync_dataframe(
     key_columns,
     chunk_size: int = 5000,
 ):
-    """Synchronize a dataframe with a PostgreSQL table."""
+    """
+    Synchronize a dataframe with a PostgreSQL table.
+    
+    We syncronize by building a tmp table first, using the clean_table data
+    We then compare the temp table to the real table, and see which insertions/updates/deletions need to be made
+    Insertions are always allowed
+    If an update/deletion is attempted on a diagnosis which we actively use, the DB transaction is cancelled
+    TODO: if this happens, we want to be able to go over the changes and approve them on a per line basis
+    If this is not the case, all insertions, updates and deletions are logged and the transaction is completed
+    """
 
     if df is None or df.empty:
         logging.warning("No data for %s", table_name)
@@ -143,6 +171,9 @@ def sync_dataframe(
 
 
 def _create_temp_table(cur, schema, table, temp_table, columns):
+    """
+    Create the temp table used in the sync function
+    """
     cur.execute(
         sql.SQL("""
             CREATE TEMP TABLE {} AS
@@ -157,6 +188,9 @@ def _create_temp_table(cur, schema, table, temp_table, columns):
 
 
 def _load_temp_table(cur, conn, temp_table, columns, df, chunk_size):
+    """
+    Load the content into the temp table
+    """
     values = [
         tuple(x.item() if hasattr(x, "item") else x for x in row)
         for row in df.to_numpy()
@@ -179,7 +213,11 @@ def _load_temp_table(cur, conn, temp_table, columns, df, chunk_size):
 
 
 def _check_protected_diagnoses(cur, temp_table, columns):
-    """Prevent changes to diagnoses referenced by autopsy_diagnosis."""
+    """
+    Prevent changes to diagnoses referenced by autopsy_diagnosis.
+    This function checks the autopsy_diagnosis table
+    if any of the diagnosis ids used in this table, are in line to get altered/deleted, it throws an error
+    """
 
     cur.execute("""
         SELECT EXISTS (
@@ -249,8 +287,19 @@ def _check_protected_diagnoses(cur, temp_table, columns):
             for row in changes
         )
     )
+ 
     
 def _insert_rows(cur, schema, table, temp_table, columns, join_condition):
+    """
+    This function handles insertion requests made by the sync function
+    In essence, it checks if a row is new, and not an update, by looking for changes in key columns.
+    For instance, in the closure table:
+    parent_id, child_id depth
+    
+    parent_id and child_id are denoted as key columns.
+    if they stay the same, and the depth changes, this is flagged as an update.
+    but if a new parent_id, child_id pair is detected, this is flagged as an insertion.
+    """
     cur.execute(
         sql.SQL("""
             INSERT INTO {schema}.{table} ({columns})
@@ -280,6 +329,10 @@ def _insert_rows(cur, schema, table, temp_table, columns, join_condition):
 def _update_rows(
     cur, schema, table, temp_table, update_columns, join_condition
 ):
+    """
+    This function shares a lot of its logic with the insert_rows function
+    The key differences is that this function looks for updates
+    """
     if not update_columns:
         return 0
 
@@ -314,6 +367,9 @@ def _update_rows(
 
 
 def _delete_rows(cur, schema, table, temp_table, join_condition):
+    """
+    This function is similar to the update function
+    """
     cur.execute(
         sql.SQL("""
             DELETE FROM {schema}.{table} AS target
@@ -334,22 +390,25 @@ def _delete_rows(cur, schema, table, temp_table, join_condition):
 
 
 def main():
+    #Load the config file
     logging.basicConfig(level=logging.INFO)
-
     config = load_config(f"{PROJECT_ROOT}/config/config.yml")
+    
+    #Get the config parameter groups
     db_config = config["database"]["postgres"]
     api_settings = config["scraper"]["api_settings"]
 
+    #Get the icd version
     token = get_token(api_settings)
     icd_version = get_latest_release(api_settings, token)
 
+    #Prep the input data file and the database connection
     input_dir = Path(
         config["scraper"]["scrape_settings"]["out_dir"].replace(
             "version",
             icd_version,
         )
     )
-
     conn = get_connection(db_config)
 
     # 1. Load database schemas
@@ -388,6 +447,7 @@ def main():
     )
 
     # 4. Sync remaining tables
+    #Table mapping consists of table_name (key): file name, key column(s)
     table_mapping = {
         "diagnosis.diagnosis_hierarchy": (
             "diagnosis_hierarchy",

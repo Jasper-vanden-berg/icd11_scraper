@@ -1,0 +1,14 @@
+name: icd_scraper
+
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.11
+  - aiohttp
+  - pandas
+  - pyyaml
+  - psycopg2
+  - requests
+  - httpx

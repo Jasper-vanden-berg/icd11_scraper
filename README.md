@@ -9,7 +9,7 @@ How to use this repo:
 1. Setting up the environment
 The repo contains an environment.yml file, containing all packages used by the scripts. to create the python environment:
 
-conda env create -f environment.yml
+conda env create -f config/environment.yml
 conda activate icd_scraper
 
 If this code is run from VS code, the environment will have to be set as its python interpreter.

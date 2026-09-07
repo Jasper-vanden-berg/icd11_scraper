@@ -481,7 +481,8 @@ async def async_main():
     #Compare it to the latest version in the data folder, if the same, skip scraping
     out_dir = PROJECT_ROOT / scrape_settings["out_dir"].replace("version", icd_version)
     data_dir = Path(out_dir).parent
-    db_version =max((p for p in data_dir.glob("????-??") if p.is_dir()), key=lambda p: p.name).name
+    db_version =max((p for p in data_dir.glob("????-??") if p.is_dir()), key=lambda p: p.name, default=None)
+    db_version = db_version.name if db_version else None
     if db_version == icd_version:
         logging.info("ICD-11 version is up to date: %s. ""No update needed.",db_version,)
         return
